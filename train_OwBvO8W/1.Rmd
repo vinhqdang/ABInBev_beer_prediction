@@ -1,0 +1,221 @@
+---
+title: "R ABInBev Data Science Talent Hunt Hackathon"
+output: html_notebook
+---
+
+```{r}
+source("1.R")
+```
+
+
+# Load data
+```{r}
+demographics <- read.csv ("demographics.csv", header = TRUE)
+event_calendar <- read.csv ("event_calendar.csv", header = TRUE)
+historical_volume <- read.csv ("historical_volume.csv", header = TRUE)
+industry_soda_sales <- read.csv("industry_soda_sales.csv", header = TRUE)
+industry_volume <- read.csv("industry_volume.csv", header = TRUE)
+price_sales_promotion <- read.csv("price_sales_promotion.csv", header = TRUE)
+weather <- read.csv("weather.csv", header = TRUE)
+```
+
+<!-- Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*. -->
+
+<!-- When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file). -->
+
+<!-- The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed. -->
+
+Check basic information:
+
+```{r}
+print ("Demographics")
+str(demographics)
+```
+
+```{r}
+print ("Event_calendar")
+event_calendar[,2:13] <- ifelse(event_calendar[,2:13] == 1, TRUE, FALSE)
+event_calendar$month <- event_calendar$YearMonth %% 100
+event_calendar$year <- floor(event_calendar$YearMonth / 100)
+str(event_calendar)
+```
+
+```{r}
+print ("Historical_volume")
+historical_volume$month <- historical_volume$YearMonth %% 100
+historical_volume$year <- floor(historical_volume$YearMonth / 100)
+str (historical_volume)
+```
+
+```{r}
+print ("Industry_soda_sales")
+industry_soda_sales$month <- industry_soda_sales$YearMonth %% 100
+industry_soda_sales$year <- floor (industry_soda_sales$YearMonth / 100)
+str (industry_soda_sales)
+```
+
+```{r}
+print ("Industry_volume")
+industry_volume$month <- industry_volume$YearMonth %% 100
+industry_volume$year <- floor (industry_volume$YearMonth / 100)
+str (industry_volume)
+```
+
+```{r}
+print ("Price_sales_promotion")
+price_sales_promotion$month <- price_sales_promotion$YearMonth %% 100
+price_sales_promotion$year <- floor (price_sales_promotion$YearMonth / 100)
+str (price_sales_promotion)
+```
+
+```{r}
+print ("Weather")
+weather$month <- weather$YearMonth %% 100
+weather$year <- floor(weather$YearMonth / 100)
+str (weather)
+```
+We can merge datasets now
+
+```{r}
+df <- merge_datasets(demographics, event_calendar)
+df <- merge_datasets(df, historical_volume)
+df <- merge_datasets(df, industry_soda_sales)
+df <- merge_datasets(df, industry_volume)
+df <- merge_datasets(df, price_sales_promotion)
+df <- merge_datasets(df, weather)
+str(df)
+```
+
+```{r}
+df$SKU_index <- sapply(as.character(df$SKU), FUN = numextract)
+df$Agency_index <- sapply(as.character(df$Agency), FUN = numextract)
+```
+
+```{r}
+df$month_index <- (df$year - min (df$year)) * 12 + df$month
+```
+
+
+```{r}
+for (i in 1:max(df$Agency_index)) {
+  for (j in 1:max(df$SKU_index)) {
+    df1 <- df[df$SKU_index == j & df$Agency_index == i,]
+    if (nrow(df1) == 0) {
+      print (paste("Agency: ", i, ". SKU: ", j))
+      next
+    }
+    plot (Volume ~ month_index, data = df1, main = paste (paste("Agency: ", i, ". SKU: ", j)))
+  }
+}
+```
+
+## Train / Test Divide
+
+```{r}
+train <- df [df$year != 2017,]
+test <- df [df$year == 2017,]
+```
+
+```{r}
+str(train)
+```
+
+```{r}
+x_col <- c(2,3,4:19,21:26,29)
+y_col <- c(20)
+```
+
+# Train models
+
+```{r}
+library (h2o)
+h2o.init ()
+```
+
+Using AutoML
+```{r}
+h_train <- as.h2o(train)
+h_test <- as.h2o(test)
+
+```
+
+
+```{r}
+h_df <- as.h2o (df)
+```
+
+Predicting values for Jan 2018
+
+```{r}
+submit_list <- read.csv("../test_8uviCCm/volume_forecast.csv", header = TRUE)
+```
+
+```{r}
+# predict soda volume in jan 2018
+library (forecast)
+fit_soda <- Arima(industry_soda_sales$Soda_Volume, include.drift = TRUE)
+p_soda <- forecast(fit_soda, 1)
+```
+
+```{r}
+# predict industrial volume volume in jan 2018
+fit_ind_volume <- Arima(industry_volume$Industry_Volume, include.drift = TRUE)
+p_ind_volume <- forecast(fit_ind_volume, 1)
+```
+
+```{r}
+predict_df <- data.frame(Agency = character(),
+                         SKU = character(),
+                            Price = numeric(),
+                            Sales = numeric(),
+                         Promotions = numeric(),
+                            Avg_Max_Temp = numeric())
+for (i in 1:nrow(submit_list)) {
+  agency = submit_list[i,]$Agency
+  sku = submit_list[i,]$SKU
+  
+  print (paste (agency, ",", sku, sep = ""))
+  
+  # psp <- price_sales_promotion[price_sales_promotion$Agency == agency & price_sales_promotion$SKU == sku,]
+  psp <- price_sales_promotion[price_sales_promotion$SKU == sku,]
+  weat <- weather[as.character(weather$Agency) == as.character(agency),]
+  
+  price <- as.numeric(forecast(Arima (aggregate(Price ~ YearMonth, psp, mean, na.rm = TRUE)$Price, include.drift = TRUE), 1)$mean)
+  sales <- as.numeric(forecast(Arima (aggregate(Sales ~ YearMonth, psp, mean, na.rm = TRUE)$Sales, include.drift = TRUE), 1)$mean)
+  promo <- as.numeric(forecast(Arima (aggregate(Promotions ~ YearMonth, psp, mean, na.rm = TRUE)$Promotions, include.drift = TRUE), 1)$mean)
+  max_temp <- as.numeric(forecast(Arima (weat$Avg_Max_Temp, include.drift = TRUE), 1)$mean)
+  
+ predict_df[nrow(predict_df) + 1,] <- c(as.character(agency), as.character(sku), price,  sales,promo, max_temp) 
+}
+
+predict_df <- cbind (submit_list, predict_df[,3:6])
+predict_df$Soda_Volume <- as.numeric(p_soda$mean)
+predict_df$Industry_Volume <- as.numericpredict_df$Avg_Population_2017 <- 0
+predict_df$Avg_Yearly_Household_Income_2017 <- 0
+for (i in 1:nrow(predict_df)) {
+  predict_df[i,]$Avg_Population_2017 <- demographics[as.character(demographics$Agency) == as.character(predict_df[i,]$Agency),]$Avg_Population_2017
+  predict_df[i,]$Avg_Yearly_Household_Income_2017 <- demographics[as.character(demographics$Agency) == as.character(predict_df[i,]$Agency),]$Avg_Yearly_Household_Income_2017
+}(p_ind_volume$mean)
+predict_df <- merge_datasets(predict_df, event_calendar[event_calendar$YearMonth == 201801,])
+
+
+```
+
+
+```{r}
+df[,27:29] <- NULL
+x_col <- x_col [1:24]
+x_names <- colnames(df)[x_col]
+y_names <- colnames(df)[y_col]
+predict_df$Price <- as.numeric(predict_df$Price)
+predict_df$Promotions <- as.numeric(predict_df$Promotions)
+predict_df$Sales <- as.numeric(predict_df$Sales)
+predict_df$Avg_Max_Temp <- as.numeric(predict_df$Avg_Max_Temp)
+h_pred <- as.h2o (predict_df)
+d1 <- h2o.gbm(x = x_names, y= y_names, training_frame = h_df)
+h_p <- h2o.predict(d1, h_pred)
+p <- as.vector(h_p)
+p <- ifelse(p < 0, 0, p)
+submit_list$Volume <- p
+write.csv(submit_list, quote = FALSE, row.names = FALSE, file = "submit1.csv")
+```
